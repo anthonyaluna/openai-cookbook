@@ -347,6 +347,22 @@ def identify_files_needed(text: str) -> list[str]:
     return list(result)
 
 
+def identify_patch_paths(text: str) -> list[str]:
+    prefixes = (
+        "*** Update File: ",
+        "*** Delete File: ",
+        "*** Add File: ",
+        "*** Move to: ",
+    )
+    paths = []
+    for line in text.strip().split("\n"):
+        for prefix in prefixes:
+            if line.startswith(prefix):
+                paths.append(line[len(prefix) :])
+                break
+    return paths
+
+
 def _get_updated_file(text: str, action: PatchAction, path: str) -> str:
     assert action.type == ActionType.UPDATE
     orig_lines = text.split("\n")
@@ -409,8 +425,67 @@ class DiffError(ValueError):
     pass
 
 
+import ntpath
 import os
+import stat
+from pathlib import Path
 from typing import Callable
+
+
+def _is_within(root: Path, candidate: Path) -> bool:
+    root_name = os.path.normcase(os.fspath(root))
+    candidate_name = os.path.normcase(os.fspath(candidate))
+    try:
+        return os.path.commonpath((root_name, candidate_name)) == root_name
+    except ValueError:
+        return False
+
+
+def _workspace_path(root: Path, path: str) -> Path:
+    if not isinstance(path, str) or not path:
+        raise DiffError("Patch paths must be non-empty strings")
+    if ntpath.isabs(path) or ntpath.splitdrive(path)[0]:
+        raise DiffError(f"Patch path is not workspace-relative: {path}")
+    if any(part == ".." for part in path.replace("\\", "/").split("/")):
+        raise DiffError(f"Patch path traversal is not allowed: {path}")
+
+    lexical = root / Path(path)
+    resolved = lexical.resolve(strict=False)
+    if resolved == root or not _is_within(root, resolved):
+        raise DiffError(f"Patch path escapes the workspace: {path}")
+    try:
+        target_stat = resolved.stat()
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISREG(target_stat.st_mode) and target_stat.st_nlink > 1:
+            raise DiffError(f"Patch path has multiple hard links: {path}")
+    return lexical
+
+
+class WorkspaceFilesystem:
+    """Rooted callbacks for a workspace not concurrently retargeted by other processes."""
+
+    def __init__(self, root: str):
+        self.root = Path(root).resolve(strict=True)
+        if not self.root.is_dir():
+            raise ValueError(f"Workspace root is not a directory: {root}")
+
+    def validate(self, path: str) -> None:
+        _workspace_path(self.root, path)
+
+    def open(self, path: str) -> str:
+        with open(_workspace_path(self.root, path), "rt") as f:
+            return f.read()
+
+    def write(self, path: str, content: str) -> None:
+        target = _workspace_path(self.root, path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "wt") as f:
+            f.write(content)
+
+    def remove(self, path: str) -> None:
+        os.remove(_workspace_path(self.root, path))
 
 
 def load_files(paths: list[str], open_fn: Callable) -> dict[str, str]:
@@ -434,8 +509,22 @@ def apply_commit(commit: Commit, write_fn: Callable, remove_fn: Callable) -> Non
                 write_fn(path, change.new_content)
 
 
-def process_patch(text: str, open_fn: Callable, write_fn: Callable, remove_fn: Callable) -> str:
+def process_patch(
+    text: str,
+    open_fn: Callable,
+    write_fn: Callable,
+    remove_fn: Callable,
+    path_validator: Optional[Callable[[str], None]] = None,
+) -> str:
     assert text.startswith("*** Begin Patch")
+    if open_fn is open_file and write_fn is write_file and remove_fn is remove_file:
+        workspace = WorkspaceFilesystem(Path.cwd())
+        for path in identify_patch_paths(text):
+            workspace.validate(path)
+        open_fn, write_fn, remove_fn = workspace.open, workspace.write, workspace.remove
+    if path_validator is not None:
+        for path in identify_patch_paths(text):
+            path_validator(path)
     paths = identify_files_needed(text)
     orig = load_files(paths, open_fn)
     patch, fuzz = text_to_patch(text, orig)
@@ -445,23 +534,15 @@ def process_patch(text: str, open_fn: Callable, write_fn: Callable, remove_fn: C
 
 
 def open_file(path: str) -> str:
-    with open(path, "rt") as f:
-        return f.read()
+    return WorkspaceFilesystem(Path.cwd()).open(path)
 
 
 def write_file(path: str, content: str) -> None:
-    if path.startswith("/"):
-        print("We do not support absolute paths.")
-        return
-    if "/" in path:
-        parent = "/".join(path.split("/")[:-1])
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "wt") as f:
-        f.write(content)
+    WorkspaceFilesystem(Path.cwd()).write(path, content)
 
 
 def remove_file(path: str) -> None:
-    os.remove(path)
+    WorkspaceFilesystem(Path.cwd()).remove(path)
 
 
 def main():
@@ -472,7 +553,14 @@ def main():
         print("Please pass patch text through stdin")
         return
     try:
-        result = process_patch(patch_text, open_file, write_file, remove_file)
+        workspace = WorkspaceFilesystem(Path.cwd())
+        result = process_patch(
+            patch_text,
+            workspace.open,
+            workspace.write,
+            workspace.remove,
+            workspace.validate,
+        )
     except DiffError as e:
         print(str(e))
         return
