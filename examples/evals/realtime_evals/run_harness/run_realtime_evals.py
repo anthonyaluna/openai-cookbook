@@ -14,7 +14,9 @@ Results:
 import argparse
 import asyncio
 import concurrent.futures
+import hashlib
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +66,7 @@ DEFAULT_CHUNK_MS = 20
 DEFAULT_SAMPLE_RATE_HZ = 24000
 DEFAULT_INPUT_AUDIO_FORMAT = "pcm16"
 DEFAULT_OUTPUT_AUDIO_FORMAT = "pcm16"
+SIMULATION_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -165,11 +168,13 @@ def build_failed_simulation_result(
     error_info: EvalErrorInfo,
 ) -> RunSimulationResult:
     simulation_id = str(simulation_row.get("simulation_id", "")).strip() or "unknown"
-    import re
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", simulation_id):
-        raise ValueError("Invalid simulation identifier")
-    run_audio_dir = run_dir / "audio" / simulation_id
-    trace_path = run_dir / "events" / f"{simulation_id}.jsonl"
+    artifact_id = simulation_id
+    if not SIMULATION_ID_PATTERN.fullmatch(artifact_id):
+        # Preserve the reported ID, but keep rejected IDs out of artifact paths.
+        artifact_id = hashlib.sha256(simulation_id.encode("utf-8")).hexdigest()
+        run_dir = run_dir / "rejected"
+    run_audio_dir = run_dir / "audio" / artifact_id
+    trace_path = run_dir / "events" / f"{artifact_id}.jsonl"
     row = RunTurnResult(
         simulation_id=simulation_id,
         assistant_model=args.assistant_model or args.model or "",
@@ -465,6 +470,8 @@ async def run_simulation(
     simulation_id = simulation.get(
         "simulation_id", str(simulation_row["simulation_id"])
     )
+    if not isinstance(simulation_id, str) or not SIMULATION_ID_PATTERN.fullmatch(simulation_id):
+        raise ValueError("Invalid simulation identifier")
     scenario = simulation.get("scenario", "")
 
     assistant_config = simulation.get("assistant", {})
@@ -549,9 +556,6 @@ async def run_simulation(
         if grader.get("type") == "tool_call_args"
     ]
 
-    import re
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", simulation_id):
-        raise ValueError("Invalid simulation identifier")
     run_audio_dir = run_dir / "audio" / simulation_id
     run_events_dir = run_dir / "events"
     run_conv_dir = run_dir / "conversations"
