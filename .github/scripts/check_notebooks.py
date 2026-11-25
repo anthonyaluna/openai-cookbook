@@ -1,3 +1,5 @@
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -25,8 +27,18 @@ def is_valid_notebook(path: Path) -> bool:
     with nbformat.
     """
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            nbformat.read(f, as_version=4)
+        limit = 32 * 1024**2
+        info = path.lstat()
+        if path.resolve() != path.absolute() or not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError("Expected a bounded regular notebook file")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, "rb") as f:
+            if not os.path.samestat(info, os.fstat(f.fileno())):
+                raise ValueError("Notebook file changed")
+            raw = f.read(limit + 1)
+        if len(raw) > limit:
+            raise ValueError("Notebook exceeds size limit")
+        nbformat.reads(raw.decode("utf-8"), as_version=4)
         return True
     except Exception as e:
         print(f"{path}: INVALID - {e}")

@@ -31,7 +31,9 @@ def repo_path(rel: str | Path) -> Path:
 
 def outputs_dir() -> Path:
     """Return the global `outputs/` folder, creating it if needed."""
-    out = repo_path("outputs")
+    out = ROOT_DIR / "outputs"
+    if out.is_symlink() or out.resolve() != out:
+        raise ValueError("Invalid output directory")
     out.mkdir(parents=True, exist_ok=True)
     return out
 
@@ -79,19 +81,24 @@ def output_file(name: str | Path, *, make_parents: bool = True) -> Path:
 
     If *name* already starts with the string "outputs/", that prefix is removed
     to avoid accidentally nesting a second outputs folder (e.g.
-    `outputs/outputs/foo.png`).  Absolute paths are returned unchanged.
+    `outputs/outputs/foo.png`).  Only relative output paths are accepted.
     """
 
     path = Path(name)
 
-    if path.is_absolute():
-        return path
+    if path.is_absolute() or path.drive or ".." in path.parts:
+        raise ValueError("Expected a relative output path")
 
     # Strip leading "outputs/" if present
     if path.parts and path.parts[0] == "outputs":
         path = Path(*path.parts[1:])
 
-    final = outputs_dir() / path
+    root = outputs_dir()
+    if root.is_symlink() or root.resolve() != ROOT_DIR / "outputs":
+        raise ValueError("Invalid output directory")
+    final = (root / path).resolve()
+    if final == root or not final.is_relative_to(root):
+        raise ValueError("Expected a path within outputs")
 
     if make_parents:
         final.parent.mkdir(parents=True, exist_ok=True)
@@ -105,4 +112,4 @@ __all__ = [
     "load_prompt",
     "FileSpanExporter",
     "output_file",
-] 
+]

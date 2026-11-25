@@ -118,7 +118,8 @@ def main() -> None:
     for _, row in dataset.iterrows():
         example_id = str(row["example_id"]).strip()
         user_text = str(row["user_text"]).strip()
-        if not example_id:
+        import re
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", example_id):
             raise ValueError("example_id is empty")
 
         output_wav_path = args.output_dir / f"{example_id}.wav"

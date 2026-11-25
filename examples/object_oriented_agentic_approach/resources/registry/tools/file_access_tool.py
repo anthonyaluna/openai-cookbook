@@ -2,6 +2,7 @@ from typing import Dict, Any
 import pandas as pd
 import subprocess
 import os
+from pathlib import Path
 
 from ...object_oriented_agents.utils.logger import get_logger
 from ...object_oriented_agents.core_classes.tool_interface import ToolInterface
@@ -48,14 +49,17 @@ class FileAccessTool(ToolInterface):
             self.logger.warning(f"{error_msg} - Filename provided: {filename}")
             return error_msg
 
-        # Ensure the path is correct
-        if not os.path.dirname(filename):
-        
-            filename = os.path.join('./resources/data', filename)
-        
+        root = Path("./resources/data").resolve()
+        name = Path(filename)
+        candidate = (root / name).resolve()
+        if name.is_absolute() or name.name != filename or candidate.parent != root or not candidate.is_file():
+            return "Error: Choose a CSV in the sample data directory."
+        if candidate.stat().st_size > 8 * 1024**2:
+            return "Error: CSV exceeds the example file size limit."
+        filename = str(candidate)
         self.logger.debug(f"Attempting to read file at path: {filename}")
         try:
-            df = pd.read_csv(filename)
+            df = pd.read_csv(filename, nrows=15)
             self.logger.debug(f"File '{filename}' loaded successfully.")
             copy_output = self.copy_file_to_container(filename)
             head_str = df.head(15).to_string()
