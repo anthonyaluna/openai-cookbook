@@ -165,6 +165,9 @@ def build_failed_simulation_result(
     error_info: EvalErrorInfo,
 ) -> RunSimulationResult:
     simulation_id = str(simulation_row.get("simulation_id", "")).strip() or "unknown"
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", simulation_id):
+        raise ValueError("Invalid simulation identifier")
     run_audio_dir = run_dir / "audio" / simulation_id
     trace_path = run_dir / "events" / f"{simulation_id}.jsonl"
     row = RunTurnResult(
@@ -546,6 +549,9 @@ async def run_simulation(
         if grader.get("type") == "tool_call_args"
     ]
 
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", simulation_id):
+        raise ValueError("Invalid simulation identifier")
     run_audio_dir = run_dir / "audio" / simulation_id
     run_events_dir = run_dir / "events"
     run_conv_dir = run_dir / "conversations"
